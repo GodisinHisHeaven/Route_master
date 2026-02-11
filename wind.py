@@ -1,19 +1,37 @@
 import requests
 import os
+import time
 from datetime import datetime, timedelta
 
+# Cache forecast responses to avoid hammering the API.
+_FORECAST_CACHE = {"ts": 0, "data": None}
+_FORECAST_TTL_SECONDS = int(os.getenv("OPENWEATHER_CACHE_TTL_SECONDS", "600"))
+_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENWEATHER_TIMEOUT_SECONDS", "10"))
+
+def _get_forecast_json(url: str):
+    now = time.time()
+    if _FORECAST_CACHE["data"] is not None and (now - _FORECAST_CACHE["ts"]) < _FORECAST_TTL_SECONDS:
+        return _FORECAST_CACHE["data"]
+
+    resp = requests.get(url, timeout=_REQUEST_TIMEOUT_SECONDS)
+    resp.raise_for_status()
+    data = resp.json()
+    _FORECAST_CACHE["ts"] = now
+    _FORECAST_CACHE["data"] = data
+    return data
+
 def get_wind_direction_at_hour(target_hour):
-    api_key = os.getenv('OPENWEATHER_API_KEY')
+    api_key = os.getenv("OPENWEATHER_API_KEY")
     if not api_key:
-        print("API key not found. Please set the OPENWEATHER_API_KEY environment variable.")
+        print("API key not found. Please set OPENWEATHER_API_KEY environment variable.")
         return None
 
-    lat = 40.102121327005165
-    lon = -88.22681926647813
+    lat = float(os.getenv("LAT", "40.102121327005165"))
+    lon = float(os.getenv("LON", "-88.22681926647813"))
     url = f"https://api.openweathermap.org/data/2.5/forecast?lat={lat}&lon={lon}&appid={api_key}"
 
     try:
-        response = requests.get(url).json()
+        response = _get_forecast_json(url)
         # Find the closest forecast time to the target_hour, considering the data is in 3-hour intervals
         now = datetime.now()
         target_datetime = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
