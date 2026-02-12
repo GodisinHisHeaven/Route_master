@@ -137,10 +137,19 @@ async def pickroute(ctx, hour: int, mile: float):
         logger.error("Route data is not in the expected format.")
         return
 
-    # Filter routes by the ideal wind direction
-    filtered_routes = [
-        route for route in routes if route.get("Ideal Wind Direction") == direction
-    ]
+    # Filter routes by the ideal wind direction.
+    # The sheet sometimes contains values like "N/NE", "E or SE", or trailing spaces.
+    # We normalize by extracting any cardinal tokens and matching against the forecast direction.
+    import re
+
+    def _dir_tokens(val) -> set[str]:
+        if val is None:
+            return set()
+        s = str(val).upper().strip()
+        return set(re.findall(r"\b[NSWE]{1,2}\b", s))
+
+    filtered_routes = [route for route in routes if direction in _dir_tokens(route.get("Ideal Wind Direction"))]
+
     logger.info(
         "Found %d routes matching the wind direction %s",
         len(filtered_routes),
