@@ -11,6 +11,9 @@ except Exception:
 
 from wind import get_wind_direction_at_hour
 from repo import download_and_parse_xlsx
+from strava import summarize_activities, get_athlete_activities_by_token
+from strava_oauth import get_auth_url, get_user_token, is_user_connected, start_oauth_server
+from training_plan import generate_training_plan
 import json
 import random
 import logging
@@ -48,6 +51,11 @@ request_counts = defaultdict(int, request_counts)
 
 @bot.event
 async def on_ready():
+    # Start OAuth server for Strava authorization
+    oauth_port = int(os.getenv("OAUTH_PORT", "5050"))
+    start_oauth_server(port=oauth_port)
+    logger.info("OAuth server started on port %d", oauth_port)
+
     await bot.tree.sync()
     logger.info("Commands synced with Discord.")
     print("Commands synced with Discord.")
@@ -142,7 +150,7 @@ async def pickroute(ctx, hour: int, mile: float):
     # We normalize by extracting any cardinal tokens and matching against the forecast direction.
     import re
 
-    def _dir_tokens(val) -> set[str]:
+    def _dir_tokens(val) -> set:
         if val is None:
             return set()
         s = str(val).upper().strip()
@@ -178,6 +186,136 @@ async def pickroute(ctx, hour: int, mile: float):
     else:
         await ctx.send("No suitable routes found for the specified wind direction.")
         logger.warning("No suitable routes found for wind direction %s", direction)
+
+
+@bot.hybrid_command()
+async def connect_strava(ctx):
+    """Link your Strava account to get personalized training plans."""
+    user_id = str(ctx.author.id)
+
+    if is_user_connected(user_id):
+        await ctx.send("✅ Your Strava account is already connected! Use `!trainme` to get a training plan.")
+        return
+
+    auth_url = get_auth_url(user_id)
+    await ctx.send(
+        f"🔗 **Connect your Strava account**\n"
+        f"Click the link below to authorize Route Master to read your activities:\n"
+        f"{auth_url}\n\n"
+        f"After authorizing, come back and use `!trainme` to get your plan."
+    )
+
+
+@bot.hybrid_command()
+async def trainme(ctx, *, goals: str = ""):
+    """Generate a personalized 7-day training plan based on your Strava data.
+
+    Usage:
+      !trainme                        — general training plan
+      !trainme preparing for a century — plan tailored to your goal
+    """
+    user_id = str(ctx.author.id)
+    logger.info("trainme command invoked by %s (goals: %s)", ctx.author, goals)
+
+    # Check if user has connected Strava
+    if not is_user_connected(user_id):
+        auth_url = get_auth_url(user_id)
+        await ctx.send(
+            f"👋 You haven't connected your Strava account yet!\n"
+            f"Click here to authorize: {auth_url}\n\n"
+            f"After authorizing, run `!trainme` again."
+        )
+        return
+
+    # Get user's token
+    user_data = get_user_token(user_id)
+    if not user_data:
+        auth_url = get_auth_url(user_id)
+        await ctx.send(
+            f"⚠️ Your Strava token has expired. Please re-authorize:\n{auth_url}"
+        )
+        return
+
+    await ctx.send("🏋️ Fetching your Strava activities and generating a training plan... (this may take ~30s)")
+
+    try:
+        # Fetch activities
+        activities = get_athlete_activities_by_token(
+            access_token=user_data["access_token"],
+            days=30,
+        )
+
+        if not activities:
+            await ctx.send("📭 No activities found in the past 30 days. Get out there and ride! 🚴")
+            return
+
+        # Summarize
+        summary = summarize_activities(activities)
+        athlete_name = user_data.get("athlete_name", str(ctx.author))
+
+        # Generate plan
+        plan = generate_training_plan(
+            activity_summary=summary,
+            user_request=goals,
+            athlete_name=athlete_name,
+        )
+
+        # Discord has a 2000 char limit; split if needed
+        header = f"📋 **Training Plan for {athlete_name}**\n"
+        header += f"_Based on {summary['total_activities']} activities in the past 30 days_\n\n"
+
+        full_msg = header + plan
+
+        if len(full_msg) <= 2000:
+            await ctx.send(full_msg)
+        else:
+            # Split into chunks
+            await ctx.send(header)
+            chunks = [plan[i:i+1900] for i in range(0, len(plan), 1900)]
+            for chunk in chunks:
+                await ctx.send(chunk)
+
+        logger.info("Training plan generated for %s (%d activities)", athlete_name, len(activities))
+
+    except Exception as e:
+        logger.error("trainme failed for %s: %s", ctx.author, e)
+        await ctx.send(f"⚠️ Something went wrong: {e}")
+
+
+@bot.hybrid_command()
+async def mystats(ctx):
+    """Show a summary of your recent Strava training data."""
+    user_id = str(ctx.author.id)
+
+    if not is_user_connected(user_id):
+        await ctx.send("You haven't connected Strava yet. Use `!connect_strava` first.")
+        return
+
+    user_data = get_user_token(user_id)
+    if not user_data:
+        await ctx.send("⚠️ Token expired. Use `!connect_strava` to re-authorize.")
+        return
+
+    try:
+        activities = get_athlete_activities_by_token(user_data["access_token"], days=30)
+        if not activities:
+            await ctx.send("📭 No activities in the past 30 days.")
+            return
+
+        summary = summarize_activities(activities)
+        lines = [f"📊 **{user_data.get('athlete_name', 'Your')} — Last 30 Days**\n"]
+        lines.append(f"Total activities: {summary['total_activities']}")
+
+        for sport, data in summary["by_type"].items():
+            lines.append(f"• **{sport}**: {data['count']}x, {data['total_miles']} mi, {data['total_minutes']} min")
+
+        lines.append(f"\n**Weekly volume:**")
+        for week, data in sorted(summary["weekly_breakdown"].items()):
+            lines.append(f"• {week}: {data['miles']} mi ({data['count']} activities)")
+
+        await ctx.send("\n".join(lines))
+    except Exception as e:
+        await ctx.send(f"⚠️ Error: {e}")
 
 
 # Run the bot with the token
