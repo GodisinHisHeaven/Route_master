@@ -149,6 +149,24 @@ def get_athlete_activities_by_token(access_token: str, days: int = 30, per_page:
     return activities
 
 
+def _estimate_hrtss(avg_hr: float, max_hr: float, duration_min: float, resting_hr: float = 60.0) -> float:
+    """Estimate hrTSS (heart-rate based Training Stress Score).
+
+    Uses the standard hrTSS formula:
+      hrTSS = (duration * HRR_ratio * 0.64 * e^(1.92 * HRR_ratio)) / 3.6
+    where HRR_ratio = (avg_hr - resting_hr) / (max_hr - resting_hr)
+
+    This is an approximation — real TSS requires power data.
+    """
+    import math
+    if not avg_hr or not max_hr or max_hr <= resting_hr:
+        return 0.0
+    hrr = (avg_hr - resting_hr) / (max_hr - resting_hr)
+    hrr = max(0.0, min(hrr, 1.5))  # clamp
+    hrtss = (duration_min * hrr * 0.64 * math.exp(1.92 * hrr)) / 3.6
+    return round(hrtss, 1)
+
+
 def summarize_activities(activities: list[dict]) -> dict:
     """Produce a training summary from raw activities for LLM consumption."""
     summary = {
@@ -156,7 +174,16 @@ def summarize_activities(activities: list[dict]) -> dict:
         "by_type": {},
         "weekly_breakdown": {},
         "recent_activities": [],
+        "training_load": {
+            "total_estimated_tss": 0,
+            "avg_daily_tss": 0,
+            "total_suffer_score": 0,
+        },
     }
+
+    total_tss = 0.0
+    total_suffer = 0.0
+    days_with_activity = set()
 
     for act in activities:
         sport = act.get("sport_type") or act.get("type", "Unknown")
@@ -164,16 +191,25 @@ def summarize_activities(activities: list[dict]) -> dict:
         duration_min = round(act.get("moving_time", 0) / 60, 1)
         elev_ft = round(act.get("total_elevation_gain", 0) * 3.28084, 0)
         date_str = act.get("start_date_local", "")[:10]
-        suffer = act.get("suffer_score")
+        suffer = act.get("suffer_score") or 0
         avg_hr = act.get("average_heartrate")
+        max_hr = act.get("max_heartrate")
         avg_speed_mph = round(act.get("average_speed", 0) * 2.23694, 1) if act.get("average_speed") else None
+
+        # Estimate hrTSS
+        hrtss = _estimate_hrtss(avg_hr, max_hr, duration_min) if avg_hr and max_hr else 0.0
+        total_tss += hrtss
+        total_suffer += suffer
+        if date_str:
+            days_with_activity.add(date_str)
 
         # By type
         if sport not in summary["by_type"]:
-            summary["by_type"][sport] = {"count": 0, "total_miles": 0, "total_minutes": 0}
+            summary["by_type"][sport] = {"count": 0, "total_miles": 0, "total_minutes": 0, "total_tss": 0}
         summary["by_type"][sport]["count"] += 1
         summary["by_type"][sport]["total_miles"] = round(summary["by_type"][sport]["total_miles"] + dist_mi, 1)
         summary["by_type"][sport]["total_minutes"] = round(summary["by_type"][sport]["total_minutes"] + duration_min, 1)
+        summary["by_type"][sport]["total_tss"] = round(summary["by_type"][sport]["total_tss"] + hrtss, 1)
 
         # Weekly breakdown
         try:
@@ -182,7 +218,7 @@ def summarize_activities(activities: list[dict]) -> dict:
         except Exception:
             week_start = "unknown"
         if week_start not in summary["weekly_breakdown"]:
-            summary["weekly_breakdown"][week_start] = {"miles": 0, "minutes": 0, "count": 0}
+            summary["weekly_breakdown"][week_start] = {"miles": 0, "minutes": 0, "count": 0, "tss": 0}
         summary["weekly_breakdown"][week_start]["miles"] = round(
             summary["weekly_breakdown"][week_start]["miles"] + dist_mi, 1
         )
@@ -190,6 +226,9 @@ def summarize_activities(activities: list[dict]) -> dict:
             summary["weekly_breakdown"][week_start]["minutes"] + duration_min, 1
         )
         summary["weekly_breakdown"][week_start]["count"] += 1
+        summary["weekly_breakdown"][week_start]["tss"] = round(
+            summary["weekly_breakdown"][week_start]["tss"] + hrtss, 1
+        )
 
         # Keep last 10 activities with detail
         if len(summary["recent_activities"]) < 10:
@@ -203,11 +242,23 @@ def summarize_activities(activities: list[dict]) -> dict:
             }
             if avg_hr:
                 entry["avg_hr"] = avg_hr
+            if max_hr:
+                entry["max_hr"] = max_hr
             if avg_speed_mph:
                 entry["avg_speed_mph"] = avg_speed_mph
             if suffer:
                 entry["suffer_score"] = suffer
+            if hrtss:
+                entry["estimated_tss"] = hrtss
             summary["recent_activities"].append(entry)
+
+    # Training load summary
+    num_days = max(len(days_with_activity), 1)
+    summary["training_load"]["total_estimated_tss"] = round(total_tss, 1)
+    summary["training_load"]["avg_daily_tss"] = round(total_tss / 30, 1)  # over 30-day window
+    summary["training_load"]["total_suffer_score"] = round(total_suffer, 1)
+    summary["training_load"]["active_days"] = len(days_with_activity)
+    summary["training_load"]["avg_tss_per_session"] = round(total_tss / max(len(activities), 1), 1)
 
     return summary
 

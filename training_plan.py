@@ -42,7 +42,12 @@ Rules:
 - Exactly 7 days (Mon-Sun)
 - emoji: use sport emoji (🚴🏻🏃🏻🏊🏻💪😴 etc.)
 - description: 1 line, include distance/duration/intensity
-- For rest days: activity="Rest", emoji="😴", description="Recovery"
+- For rest days: activity="Rest", emoji="😴", description="Recovery", duration_min=0
+- Use the training_load data (estimated TSS, weekly TSS trends) to calibrate intensity:
+  * If avg daily TSS is high (>60), include more recovery
+  * If weekly TSS is trending up, consider a deload week
+  * Target a reasonable weekly TSS based on their recent load
+  * Include estimated_tss for each day in the JSON
 - If the user provides specific goals, prioritize those.
 - Respond in the same language as the user's request for description/summary fields."""
 

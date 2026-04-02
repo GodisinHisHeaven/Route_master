@@ -305,9 +305,15 @@ async def trainme(ctx, hours: float = 0.0, *, goals: str = ""):
                 activity = day_info.get("activity", "")
                 desc = day_info.get("description", "")
                 dur = day_info.get("duration_min", "")
-                dur_str = f" ({dur} min)" if dur else ""
+                tss = day_info.get("estimated_tss", "")
+                meta_parts = []
+                if dur:
+                    meta_parts.append(f"{dur} min")
+                if tss:
+                    meta_parts.append(f"TSS ~{tss}")
+                meta_str = f" ({', '.join(meta_parts)})" if meta_parts else ""
                 embed.add_field(
-                    name=f"{emoji} {day_name} — {activity}{dur_str}",
+                    name=f"{emoji} {day_name} — {activity}{meta_str}",
                     value=desc or "\u200b",
                     inline=False,
                 )
@@ -354,15 +360,17 @@ async def mystats(ctx):
             return
 
         summary = summarize_activities(activities)
+        load = summary.get("training_load", {})
         lines = [f"📊 **{user_data.get('athlete_name', 'Your')} — Last 30 Days**\n"]
-        lines.append(f"Total activities: {summary['total_activities']}")
+        lines.append(f"Total activities: {summary['total_activities']} | Active days: {load.get('active_days', '?')}")
+        lines.append(f"💪 Total TSS: ~{load.get('total_estimated_tss', 0)} | Avg/day: ~{load.get('avg_daily_tss', 0)} | Avg/session: ~{load.get('avg_tss_per_session', 0)}")
 
         for sport, data in summary["by_type"].items():
-            lines.append(f"• **{sport}**: {data['count']}x, {data['total_miles']} mi, {data['total_minutes']} min")
+            lines.append(f"• **{sport}**: {data['count']}x, {data['total_miles']} mi, {data['total_minutes']} min, TSS ~{data.get('total_tss', 0)}")
 
         lines.append(f"\n**Weekly volume:**")
         for week, data in sorted(summary["weekly_breakdown"].items()):
-            lines.append(f"• {week}: {data['miles']} mi ({data['count']} activities)")
+            lines.append(f"• {week}: {data['miles']} mi, TSS ~{data.get('tss', 0)} ({data['count']} activities)")
 
         await ctx.send("\n".join(lines))
     except Exception as e:
