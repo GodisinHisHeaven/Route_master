@@ -229,7 +229,7 @@ class TestTrainingPlanKimi:
         assert "unavailable" in result.lower()
 
     @patch("training_plan.requests.post")
-    def test_uses_kimi_endpoint(self, mock_post):
+    def test_uses_nvidia_endpoint(self, mock_post):
         import training_plan
         training_plan.KIMI_API_KEY = "test-kimi-key"
         mock_post.return_value = MagicMock(
@@ -241,7 +241,7 @@ class TestTrainingPlanKimi:
 
         call_kwargs = mock_post.call_args
         url = call_kwargs[0][0] if call_kwargs[0] else call_kwargs[1].get("url", "")
-        assert "moonshot" in url or "kimi" in url.lower()
+        assert "nvidia" in url or "integrate.api" in url
 
     @patch("training_plan.requests.post")
     def test_athlete_name_in_prompt(self, mock_post):

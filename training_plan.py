@@ -1,6 +1,6 @@
-"""Training plan generator using Kimi (Moonshot) API based on Strava activity data.
+"""Training plan generator using Kimi K2.5 (via NVIDIA NIM) based on Strava activity data.
 
-Uses OpenAI-compatible API format with Moonshot's endpoint.
+Uses OpenAI-compatible API format with NVIDIA's endpoint.
 """
 
 from __future__ import annotations
@@ -13,10 +13,10 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# Kimi / Moonshot config
+# Kimi K2.5 via NVIDIA NIM
 KIMI_API_KEY = os.getenv("KIMI_API_KEY", "")
-KIMI_BASE_URL = os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
-KIMI_MODEL = os.getenv("KIMI_MODEL", "moonshot-v1-32k")
+KIMI_BASE_URL = os.getenv("KIMI_BASE_URL", "https://integrate.api.nvidia.com/v1")
+KIMI_MODEL = os.getenv("KIMI_MODEL", "moonshotai/kimi-k2.5")
 
 SYSTEM_PROMPT = """You are an expert cycling and endurance sports coach.
 Given an athlete's recent training data (past ~30 days from Strava), generate a personalized
@@ -41,7 +41,7 @@ def generate_training_plan(
     user_request: str = "",
     athlete_name: str = "Athlete",
 ) -> str:
-    """Generate a 7-day training plan using Kimi based on Strava activity summary."""
+    """Generate a 7-day training plan using Kimi K2.5 based on Strava activity summary."""
 
     api_key = KIMI_API_KEY or os.getenv("KIMI_API_KEY", "")
     if not api_key:

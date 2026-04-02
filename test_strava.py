@@ -238,6 +238,25 @@ class TestGenerateTrainingPlan:
         assert "Tuesday" in result
 
     @patch("training_plan.requests.post")
+    def test_uses_nvidia_nim(self, mock_post):
+        """Verify the request goes to NVIDIA NIM endpoint with kimi model."""
+        import training_plan
+        training_plan.KIMI_API_KEY = "test-key"
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "plan"}}]
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
+
+        generate_training_plan({"total_activities": 1})
+        url = mock_post.call_args[0][0]
+        body = mock_post.call_args[1]["json"]
+        assert "nvidia" in url
+        assert "kimi" in body["model"]
+
+    @patch("training_plan.requests.post")
     def test_api_error_handled(self, mock_post):
         import training_plan
         training_plan.KIMI_API_KEY = "test-key"
