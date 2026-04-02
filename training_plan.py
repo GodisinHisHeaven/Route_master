@@ -22,24 +22,36 @@ SYSTEM_PROMPT = """You are an expert cycling and endurance sports coach.
 Given an athlete's recent training data (past ~30 days from Strava), generate a personalized
 7-day training plan for the upcoming week.
 
-Guidelines:
-- Consider their training volume, intensity patterns, and sport types
-- Include rest days as needed based on recent load
-- Be specific: distance, duration, intensity zone, workout type
-- If they do multiple sports (run, swim, etc.), incorporate cross-training
-- Account for progressive overload but avoid injury risk
-- Keep the plan practical and achievable
-- Format the plan clearly day by day (Mon-Sun)
-- Add brief rationale for the overall plan structure
+You MUST respond with ONLY a valid JSON object, no markdown, no code fences, no extra text.
+The JSON schema:
+{
+  "summary": "1-sentence overall rationale",
+  "total_hours": 7.5,
+  "days": [
+    {
+      "day": "Monday",
+      "emoji": "🚴",
+      "activity": "Cycling",
+      "description": "60 min Zone 2, flat terrain, 18 mi",
+      "duration_min": 60
+    }
+  ]
+}
 
-If the user provides specific goals or requests, prioritize those.
-Respond in the same language as the user's request (English or Chinese)."""
+Rules:
+- Exactly 7 days (Mon-Sun)
+- emoji: use sport emoji (🚴🏻🏃🏻🏊🏻💪😴 etc.)
+- description: 1 line, include distance/duration/intensity
+- For rest days: activity="Rest", emoji="😴", description="Recovery"
+- If the user provides specific goals, prioritize those.
+- Respond in the same language as the user's request for description/summary fields."""
 
 
 def generate_training_plan(
     activity_summary: dict,
     user_request: str = "",
     athlete_name: str = "Athlete",
+    target_hours: float = None,
 ) -> str:
     """Generate a 7-day training plan using Kimi K2.5 based on Strava activity summary."""
 
@@ -51,34 +63,51 @@ def generate_training_plan(
         f"Athlete: {athlete_name}",
         f"\n## Training Data (Past 30 Days)\n```json\n{json.dumps(activity_summary, indent=2)}\n```",
     ]
+    if target_hours:
+        user_msg_parts.append(f"\n## Time Constraint\nTotal training time for next week: {target_hours} hours. Distribute across the 7 days accordingly. The total_hours in your JSON output MUST equal {target_hours}.")
     if user_request:
         user_msg_parts.append(f"\n## Athlete's Goals/Requests\n{user_request}")
     user_msg_parts.append("\nPlease generate a 7-day training plan for next week.")
 
     user_msg = "\n".join(user_msg_parts)
 
-    try:
-        resp = requests.post(
-            f"{KIMI_BASE_URL}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": KIMI_MODEL,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                "max_tokens": 2000,
-                "temperature": 0.7,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        plan = data["choices"][0]["message"]["content"]
-        return plan
-    except Exception as e:
-        logger.error("Failed to generate training plan: %s", e)
-        return f"⚠️ Error generating training plan: {e}"
+    payload = {
+        "model": KIMI_MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        "max_tokens": 16384,
+        "temperature": 0.7,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                f"{KIMI_BASE_URL}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["choices"][0]["message"].get("content")
+            # Kimi K2.5 may return content=null with reasoning in the message;
+            # fall back to reasoning text if content is empty.
+            if not content:
+                reasoning = data["choices"][0]["message"].get("reasoning", "")
+                content = reasoning or "(No plan generated — model returned empty response)"
+            return content
+        except Exception as e:
+            last_err = e
+            logger.warning("Training plan attempt %d failed: %s", attempt + 1, e)
+            import time
+            time.sleep(2)
+
+    logger.error("All attempts failed for training plan: %s", last_err)
+    return f"⚠️ Error generating training plan: {last_err}"

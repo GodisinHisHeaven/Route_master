@@ -194,7 +194,7 @@ async def connect_strava(ctx):
     user_id = str(ctx.author.id)
 
     if is_user_connected(user_id):
-        await ctx.send("✅ Your Strava account is already connected! Use `!trainme` to get a training plan.")
+        await ctx.send("✅ Your Strava account is already connected! Use `/trainme` to get a training plan.", ephemeral=True)
         return
 
     auth_url = get_auth_url(user_id)
@@ -202,20 +202,34 @@ async def connect_strava(ctx):
         f"🔗 **Connect your Strava account**\n"
         f"Click the link below to authorize Route Master to read your activities:\n"
         f"{auth_url}\n\n"
-        f"After authorizing, come back and use `!trainme` to get your plan."
+        f"After authorizing, come back and use `/trainme` to get your plan.",
+        ephemeral=True,
     )
 
 
 @bot.hybrid_command()
-async def trainme(ctx, *, goals: str = ""):
+async def disconnect_strava(ctx):
+    """Unlink your Strava account from Route Master."""
+    user_id = str(ctx.author.id)
+    if not is_user_connected(user_id):
+        await ctx.send("You don't have a Strava account connected.", ephemeral=True)
+        return
+    from strava_oauth import _token_store, _save_store
+    _token_store.pop(user_id, None)
+    _save_store()
+    await ctx.send("✅ Strava account disconnected. Use `/connect_strava` to reconnect.", ephemeral=True)
+
+
+@bot.hybrid_command()
+async def trainme(ctx, hours: float = 0.0, *, goals: str = ""):
     """Generate a personalized 7-day training plan based on your Strava data.
 
-    Usage:
-      !trainme                        — general training plan
-      !trainme preparing for a century — plan tailored to your goal
+    Args:
+      hours: Total training hours for next week (e.g. 8). 0 = auto.
+      goals: Your training goals (e.g. "preparing for a century")
     """
     user_id = str(ctx.author.id)
-    logger.info("trainme command invoked by %s (goals: %s)", ctx.author, goals)
+    logger.info("trainme command invoked by %s (hours: %s, goals: %s)", ctx.author, hours, goals)
 
     # Check if user has connected Strava
     if not is_user_connected(user_id):
@@ -223,7 +237,8 @@ async def trainme(ctx, *, goals: str = ""):
         await ctx.send(
             f"👋 You haven't connected your Strava account yet!\n"
             f"Click here to authorize: {auth_url}\n\n"
-            f"After authorizing, run `!trainme` again."
+            f"After authorizing, run `/trainme` again.",
+            ephemeral=True,
         )
         return
 
@@ -232,7 +247,8 @@ async def trainme(ctx, *, goals: str = ""):
     if not user_data:
         auth_url = get_auth_url(user_id)
         await ctx.send(
-            f"⚠️ Your Strava token has expired. Please re-authorize:\n{auth_url}"
+            f"⚠️ Your Strava token has expired. Please re-authorize:\n{auth_url}",
+            ephemeral=True,
         )
         return
 
@@ -254,26 +270,61 @@ async def trainme(ctx, *, goals: str = ""):
         athlete_name = user_data.get("athlete_name", str(ctx.author))
 
         # Generate plan
-        plan = generate_training_plan(
+        raw_plan = generate_training_plan(
             activity_summary=summary,
             user_request=goals,
             athlete_name=athlete_name,
+            target_hours=hours if hours > 0 else None,
         )
 
-        # Discord has a 2000 char limit; split if needed
-        header = f"📋 **Training Plan for {athlete_name}**\n"
-        header += f"_Based on {summary['total_activities']} activities in the past 30 days_\n\n"
+        # Try to parse as JSON and render embed
+        plan_data = None
+        try:
+            # Strip markdown code fences if present
+            cleaned = raw_plan.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
+            plan_data = json.loads(cleaned)
+        except (json.JSONDecodeError, Exception) as parse_err:
+            logger.warning("Failed to parse plan as JSON: %s", parse_err)
 
-        full_msg = header + plan
-
-        if len(full_msg) <= 2000:
-            await ctx.send(full_msg)
+        if plan_data and "days" in plan_data:
+            # Render as Discord embed
+            embed = discord.Embed(
+                title=f"📋 Training Plan for {athlete_name}",
+                description=(
+                    f"_Based on {summary['total_activities']} activities in the past 30 days_\n\n"
+                    f"**{plan_data.get('summary', '')}**\n"
+                    f"⏱️ Total: ~{plan_data.get('total_hours', '?')}h"
+                ),
+                color=0xFC4C02,  # Strava orange
+            )
+            for day_info in plan_data["days"]:
+                emoji = day_info.get("emoji", "📋")
+                day_name = day_info.get("day", "?")
+                activity = day_info.get("activity", "")
+                desc = day_info.get("description", "")
+                dur = day_info.get("duration_min", "")
+                dur_str = f" ({dur} min)" if dur else ""
+                embed.add_field(
+                    name=f"{emoji} {day_name} — {activity}{dur_str}",
+                    value=desc or "\u200b",
+                    inline=False,
+                )
+            embed.set_footer(text="Powered by Strava + Kimi K2.5 • /trainme")
+            await ctx.send(embed=embed)
         else:
-            # Split into chunks
-            await ctx.send(header)
-            chunks = [plan[i:i+1900] for i in range(0, len(plan), 1900)]
-            for chunk in chunks:
-                await ctx.send(chunk)
+            # Fallback: send as plain text
+            header = f"📋 **Training Plan for {athlete_name}**\n"
+            header += f"_Based on {summary['total_activities']} activities in the past 30 days_\n\n"
+            full_msg = header + raw_plan
+            if len(full_msg) <= 2000:
+                await ctx.send(full_msg)
+            else:
+                await ctx.send(header)
+                chunks = [raw_plan[i:i+1900] for i in range(0, len(raw_plan), 1900)]
+                for chunk in chunks:
+                    await ctx.send(chunk)
 
         logger.info("Training plan generated for %s (%d activities)", athlete_name, len(activities))
 
@@ -288,12 +339,12 @@ async def mystats(ctx):
     user_id = str(ctx.author.id)
 
     if not is_user_connected(user_id):
-        await ctx.send("You haven't connected Strava yet. Use `!connect_strava` first.")
+        await ctx.send("You haven't connected Strava yet. Use `/connect_strava` first.")
         return
 
     user_data = get_user_token(user_id)
     if not user_data:
-        await ctx.send("⚠️ Token expired. Use `!connect_strava` to re-authorize.")
+        await ctx.send("⚠️ Token expired. Use `/connect_strava` to re-authorize.")
         return
 
     try:

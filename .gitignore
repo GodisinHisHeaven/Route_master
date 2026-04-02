@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .env
 routes_cache.json
+bot.log
+bot.pid
+request_counts.json
+strava_token.json
+strava_tokens.json
+route_notes.json
